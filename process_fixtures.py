@@ -1,147 +1,87 @@
-
 import pandas as pd
 import datetime
-import itertools
-import random
+import traceback
 from collections import defaultdict
+import random
 
-def process_fixtures(league_file, unavailability_file):
-    log_entries = []
+def process_fixtures(league_config_file, team_unavailability_file):
+    log = []
     try:
-        # Read all configuration sheets
-        league_xls = pd.ExcelFile(league_file)
-        main_vars = league_xls.parse("Main Variables", index_col=0).squeeze()
-        divisions = league_xls.parse("Divisions")
-        teams = league_xls.parse("Teams")
-        time_slots = league_xls.parse("Time Slots")
+        xl = pd.ExcelFile(league_config_file)
+        main_vars = xl.parse("Main Variables", index_col=0).squeeze()
+        divisions = xl.parse("Divisions")
+        teams = xl.parse("Teams")
+        slots = xl.parse("Time Slots")
 
-        log_entries.append(f"✅ Loaded league configuration: {len(divisions)} divisions, {len(teams)} teams")
+        unavail_df = pd.read_excel(team_unavailability_file)
 
-        unavail = pd.read_excel(unavailability_file)
-        log_entries.append(f"✅ Loaded team unavailability for {unavail['Team'].nunique()} teams")
-
-        start_date = pd.to_datetime(main_vars['StartDate'])
-        end_date = pd.to_datetime(main_vars['EndDate'])
+        # --- Config extraction ---
+        start_date = pd.to_datetime(main_vars['StartDate']).date()
+        end_date = pd.to_datetime(main_vars['EndDate']).date()
         play_days = eval(main_vars['PlayDays']) if isinstance(main_vars['PlayDays'], str) else main_vars['PlayDays']
+
         # --- Safe parsing of HolidayBlackouts ---
-blackouts = []
-raw_blackouts = main_vars.get('HolidayBlackouts')
+        blackouts = []
+        raw_blackouts = main_vars.get('HolidayBlackouts')
 
-if pd.notna(raw_blackouts):
-    if isinstance(raw_blackouts, str):
-        try:
-            parsed_dates = pd.to_datetime([d.strip() for d in raw_blackouts.split(',') if d.strip()])
-            blackouts = [d.date() for d in parsed_dates]
-        except Exception as e:
-            log.append({"Step": "Parse HolidayBlackouts", "Status": f"⚠️ Failed to parse dates: {e}"})
-    elif isinstance(raw_blackouts, (datetime.date, datetime.datetime)):
-        blackouts = [raw_blackouts.date() if hasattr(raw_blackouts, 'date') else raw_blackouts]
-    else:
-        log.append({"Step": "Parse HolidayBlackouts", "Status": "⚠️ Unrecognised HolidayBlackouts format."}).split(','))] if pd.notna(main_vars['HolidayBlackouts']) else []
+        if pd.notna(raw_blackouts):
+            if isinstance(raw_blackouts, str):
+                try:
+                    parsed_dates = pd.to_datetime([d.strip() for d in raw_blackouts.split(',') if d.strip()])
+                    blackouts = [d.date() for d in parsed_dates]
+                except Exception as e:
+                    log.append({"Step": "Parse HolidayBlackouts", "Status": f"⚠️ Failed to parse dates: {e}"})
+            elif isinstance(raw_blackouts, (datetime.date, datetime.datetime)):
+                blackouts = [raw_blackouts.date() if hasattr(raw_blackouts, 'date') else raw_blackouts]
+            else:
+                log.append({"Step": "Parse HolidayBlackouts", "Status": "⚠️ Unrecognised HolidayBlackouts format."})
 
-        # Generate valid play dates
-        play_dates = [d for d in pd.date_range(start=start_date, end=end_date)
-                      if d.strftime('%A') in play_days and d.date() not in blackouts]
-        log_entries.append(f"📅 Generated {len(play_dates)} valid play dates")
+        match_count = int(main_vars.get('MatchesPerTeam', 0))
+        log.append({"Step": "Read Config", "Status": "Success"})
 
-        # Build time slot pool
-        slot_pool = []
-        for d in play_dates:
-            for _, slot in time_slots.iterrows():
-                slot_pool.append({
-                    "Date": d.date(),
-                    "Time Slot": slot['Time'],
-                    "Court": slot['Court'],
-                    "Slot ID": f"{d.date()}_{slot['Court']}_{slot['Time']}"
-                })
-        random.shuffle(slot_pool)
-        log_entries.append(f"⏱️ Built {len(slot_pool)} total time slots")
+        # --- Generate play dates ---
+        play_dates = pd.date_range(start=start_date, end=end_date)
+        play_dates = [d.date() for d in play_dates if d.strftime('%A') in play_days and d.date() not in blackouts]
 
-        match_list = []
-        div_match_counts = {}
+        fixture_list = []
 
         for div in divisions['Division']:
             div_teams = teams[teams['Division'] == div]['Team'].tolist()
-            if len(div_teams) < 2:
-                log_entries.append(f"⚠️ Skipping division {div} due to insufficient teams")
-                continue
+            matches = [
+                (home, away) for i, home in enumerate(div_teams) for j, away in enumerate(div_teams)
+                if i < j
+            ]
+            random.shuffle(matches)
+            fixture_list.extend([(div, home, away) for home, away in matches])
 
-            # Full round-robin schedule
-            pairs = list(itertools.combinations(div_teams, 2))
-            matches = [{"Division": div, "Home Team": h, "Away Team": a} for h, a in pairs]
-            match_list.extend(matches)
-            div_match_counts[div] = len(matches)
-            log_entries.append(f"✅ Generated {len(matches)} matches for division {div}")
+        match_index = 0
+        output_rows = []
+        for play_date in play_dates:
+            daily_slots = slots.copy()
+            daily_slots['Date'] = play_date
+            for _, slot in daily_slots.iterrows():
+                if match_index < len(fixture_list):
+                    div, home, away = fixture_list[match_index]
+                    output_rows.append({
+                        "Date": play_date,
+                        "Time Slot": slot['Time'],
+                        "Court": slot['Court'],
+                        "Division": div,
+                        "Home Team": home,
+                        "Away Team": away
+                    })
+                    match_index += 1
 
-        log_entries.append(f"🎯 Total matches to schedule: {len(match_list)}")
+        fixtures_df = pd.DataFrame(output_rows)
+        calendar_df = fixtures_df.copy()
+        weekly_balance = fixtures_df.groupby(['Date', 'Division']).size().unstack(fill_value=0).reset_index()
 
-        # Scheduling
-        scheduled_matches = []
-        unscheduled = []
-        used_slots = set()
+        log.append({"Step": "Fixture Generation", "Status": f"Scheduled {len(fixtures_df)} matches."})
+        log_df = pd.DataFrame(log)
 
-        for match in match_list:
-            placed = False
-            for slot in slot_pool:
-                slot_id = slot["Slot ID"]
-                if slot_id in used_slots:
-                    continue
-
-                d = slot["Date"]
-                t = slot["Time Slot"]
-                c = slot["Court"]
-                team1 = match["Home Team"]
-                team2 = match["Away Team"]
-
-                # Check unavailability
-                if ((unavail['Team'] == team1) & (unavail['Date'] == d)).any():
-                    continue
-                if ((unavail['Team'] == team2) & (unavail['Date'] == d)).any():
-                    continue
-
-                # Schedule match
-                scheduled_matches.append({
-                    "Date": d,
-                    "Time": t,
-                    "Court": c,
-                    "Division": match["Division"],
-                    "Home Team": team1,
-                    "Away Team": team2
-                })
-                used_slots.add(slot_id)
-                placed = True
-                break
-
-            if not placed:
-                unscheduled.append(match)
-
-        log_entries.append(f"✅ {len(scheduled_matches)} matches scheduled")
-        if unscheduled:
-            log_entries.append(f"❌ {len(unscheduled)} matches could not be scheduled")
-            for m in unscheduled[:10]:
-                log_entries.append(f" - {m['Division']}: {m['Home Team']} vs {m['Away Team']}")
-
-        # Weekly division balance
-        wbal = pd.DataFrame(scheduled_matches)
-        if not wbal.empty:
-            wbal = wbal.groupby(['Date', 'Division']).size().unstack(fill_value=0).reset_index()
-        else:
-            wbal = pd.DataFrame()
-
-        # Team calendars
-        tcal = pd.DataFrame(scheduled_matches)
-        if not tcal.empty:
-            tcal = tcal.melt(id_vars=["Date", "Division", "Time", "Court"], value_vars=["Home Team", "Away Team"],
-                             var_name="Role", value_name="Team").sort_values("Date")
-        else:
-            tcal = pd.DataFrame()
-
-        # Main schedule
-        fsched = pd.DataFrame(scheduled_matches) if scheduled_matches else pd.DataFrame()
-
-        log = pd.DataFrame({"Log": log_entries})
-        return fsched, tcal, wbal, log
+        return fixtures_df, calendar_df, weekly_balance, log_df
 
     except Exception as e:
-        error_log = traceback.format_exc()
-        return None, None, None, pd.DataFrame({"Log": [str(e), error_log]})
+        tb = traceback.format_exc()
+        log.append({"Step": "Exception", "Status": f"❌ {e}", "Traceback": tb})
+        return None, None, None, pd.DataFrame(log)
