@@ -26,7 +26,7 @@ with st.expander("View Rules and Goals Used in Scheduling"):
     rules_df = pd.read_excel("Fixture_Scheduling_Rules.xlsx", sheet_name=0)
     rules_df_sorted = rules_df.sort_values("ID")
     for _, row in rules_df_sorted.iterrows():
-        st.markdown(f"**{row['Tier']}: {row['Name']}**  ")
+        st.write('RULES COLUMNS FOUND:', rules_df.columns.tolist())
         st.markdown(f"{row['Definition']}")
         st.markdown("---")
 
