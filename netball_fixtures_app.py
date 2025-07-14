@@ -4,6 +4,8 @@ import datetime
 import traceback
 import random
 from collections import defaultdict
+from process_fixtures import process_fixtures
+
 
 st.set_page_config(page_title="Netball Fixtures Generator", layout="wide")
 st.title("Netball Fixtures Generator")
