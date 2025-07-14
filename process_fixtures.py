@@ -23,7 +23,22 @@ def process_fixtures(league_file, unavailability_file):
         start_date = pd.to_datetime(main_vars['StartDate'])
         end_date = pd.to_datetime(main_vars['EndDate'])
         play_days = eval(main_vars['PlayDays']) if isinstance(main_vars['PlayDays'], str) else main_vars['PlayDays']
-        blackouts = [d.date() for d in pd.to_datetime(main_vars['HolidayBlackouts'].split(','))] if pd.notna(main_vars['HolidayBlackouts']) else []
+        # --- Safe parsing of HolidayBlackouts ---
+blackouts = []
+raw_blackouts = main_vars.get('HolidayBlackouts')
+
+if pd.notna(raw_blackouts):
+    if isinstance(raw_blackouts, str):
+        try:
+            parsed_dates = pd.to_datetime([d.strip() for d in raw_blackouts.split(',') if d.strip()])
+            blackouts = [d.date() for d in parsed_dates]
+        except Exception as e:
+            log.append({"Step": "Parse HolidayBlackouts", "Status": f"⚠️ Failed to parse dates: {e}"})
+    elif isinstance(raw_blackouts, (datetime.date, datetime.datetime)):
+        blackouts = [raw_blackouts.date() if hasattr(raw_blackouts, 'date') else raw_blackouts]
+    else:
+        log.append({"Step": "Parse HolidayBlackouts", "Status": "⚠️ Unrecognised HolidayBlackouts format."})
+
 
         # Generate valid play dates
         play_dates = [d for d in pd.date_range(start=start_date, end=end_date)
