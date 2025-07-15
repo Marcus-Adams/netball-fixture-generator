@@ -59,18 +59,36 @@ def process_fixtures(league_config_file, team_unavailability_file):
         for play_date in play_dates:
             daily_slots = slots.copy()
             daily_slots['Date'] = play_date
-            for _, slot in daily_slots.iterrows():
-                if match_index < len(fixture_list):
-                    div, home, away = fixture_list[match_index]
-                    output_rows.append({
-                        "Date": play_date,
-                        "Time Slot": slot['Time'],
-                        "Court": slot['Court'],
-                        "Division": div,
-                        "Home Team": home,
-                        "Away Team": away
+            # Track matches played per team per day to enforce R1
+matches_today = set()
+
+        for _, slot in daily_slots.iterrows():
+            while match_index < len(fixture_list):
+                div, home, away = fixture_list[match_index]
+        
+                # --- R1: Check if home or away team already scheduled today
+                if (play_date, home) in matches_today or (play_date, away) in matches_today:
+                    log.append({
+                        "Step": f"R1 Skip ({div} - {home} vs {away})",
+                        "Status": f"⚠️ Skipped: One or both teams already scheduled on {play_date}"
                     })
                     match_index += 1
+                    continue
+        
+                output_rows.append({
+                    "Date": play_date,
+                    "Time Slot": slot['Time'],
+                    "Court": slot['Court'],
+                    "Division": div,
+                    "Home Team": home,
+                    "Away Team": away
+                })
+
+        matches_today.add((play_date, home))
+        matches_today.add((play_date, away))
+        match_index += 1
+        break  # Move to next slot after successful scheduling
+
 
         fixtures_df = pd.DataFrame(output_rows)
         calendar_df = fixtures_df.copy()
