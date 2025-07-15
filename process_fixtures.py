@@ -65,34 +65,23 @@ def process_fixtures(league_config_file, team_unavailability_file):
             matches_today = set()
             daily_slots = slots.copy()
             daily_slots['Date'] = play_date
-            slots_used = 0
 
-            slot_iter = daily_slots.iterrows()
-            while remaining_matches and slots_used < len(daily_slots):
-                try:
-                    slot_index, slot = next(slot_iter)
-                except StopIteration:
-                    break
-
-                scheduled = False
-                for idx in range(len(remaining_matches)):
-                    div, home, away = remaining_matches[idx]
+            for _, slot in daily_slots.iterrows():
+                slot_used = False
+                for idx, (div, home, away) in enumerate(remaining_matches):
 
                     # Rule 5: A team may not play itself
                     if home == away:
-                        log.append({"Step": "Rule 5", "Status": f"⚠️ Skipped {home} vs {away} — team cannot play itself"})
                         continue
 
                     # Rule 6: Skip if team is already playing today
                     if home in matches_today or away in matches_today:
-                        log.append({"Step": "Rule 6", "Status": f"⚠️ Skipped {home} vs {away} — one of the teams already has a match on {play_date}"})
                         continue
 
                     # Rule 1 & 2: Team unavailability
                     unavailable_home = unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))]
                     unavailable_away = unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))]
                     if not unavailable_home.empty or not unavailable_away.empty:
-                        log.append({"Step": "Rule 1/2", "Status": f"⚠️ Skipped {home} vs {away} — team unavailable on {play_date}"})
                         continue
 
                     # Rule 3: Already scheduled exact match on same date, time, court
@@ -102,9 +91,9 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
                     # Rule 7: Same fixture already occurred in any order across schedule
                     if (div, home, away) in played_pairs or (div, away, home) in played_pairs:
-                        log.append({"Step": "Rule 7", "Status": f"⚠️ Skipped duplicate fixture {home} vs {away} in {div}"})
                         continue
 
+                    # Schedule match
                     output_rows.append({
                         "Date": play_date,
                         "Time Slot": slot['Time'],
@@ -117,13 +106,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     matches_today.update([home, away])
                     scheduled_matches.add(match_id)
                     played_pairs.add((div, home, away))
-                    slots_used += 1
                     del remaining_matches[idx]
-                    scheduled = True
-                    break  # move to next slot
+                    slot_used = True
+                    break  # Stop looking for match for this slot
 
-                if not scheduled:
-                    continue
+                if not slot_used:
+                    log.append({"Step": "Rule 8", "Status": f"⚠️ No match found for slot {slot['Time']} Court {slot['Court']} on {play_date}"})
 
         fixtures_df = pd.DataFrame(output_rows)
         calendar_df = fixtures_df.copy()
@@ -137,12 +125,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
             else:
                 log.append({"Step": "Rule 4", "Status": f"✅ Division {div} fully scheduled ({actual} matches)."})
 
-        log.append({"Step": "Fixture Generation", "Status": f"✅ Scheduled {len(fixtures_df)} matches with Rules 1–7 enforced."})
+        log.append({"Step": "Fixture Generation", "Status": f"✅ Scheduled {len(fixtures_df)} matches with Rules 1–8 enforced."})
 
         if remaining_matches:
             for div, home, away in remaining_matches:
                 log.append({
-                    "Step": "Unscheduled", 
+                    "Step": "Unscheduled",
                     "Status": f"⚠️ Could not schedule match {home} vs {away} in {div}. Reasons could include unavailability, existing match on date, duplicate fixture, or no free slots."
                 })
 
