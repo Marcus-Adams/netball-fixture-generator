@@ -43,12 +43,15 @@ def process_fixtures(league_config_file, team_unavailability_file):
         play_dates = [d.date() for d in play_dates if d.strftime('%A') in play_days and d.date() not in blackouts]
 
         fixture_list = []
+        required_matches_per_div = {}
+
         for div in divisions['Division']:
             div_teams = teams[teams['Division'] == div]['Team'].tolist()
             matches = [
                 (home, away) for i, home in enumerate(div_teams) for j, away in enumerate(div_teams)
                 if i < j
             ]
+            required_matches_per_div[div] = len(matches)
             random.shuffle(matches)
             fixture_list.extend([(div, home, away) for home, away in matches])
 
@@ -56,13 +59,13 @@ def process_fixtures(league_config_file, team_unavailability_file):
         output_rows = []
         scheduled_matches = set()
         match_logs = []
+        unscheduled_matches = []
 
         for play_date in play_dates:
             matches_today = set()
             daily_slots = slots.copy()
             daily_slots['Date'] = play_date
             slots_used = 0
-            used_slots = set()
 
             slot_iter = daily_slots.iterrows()
             while remaining_matches and slots_used < len(daily_slots):
@@ -71,17 +74,16 @@ def process_fixtures(league_config_file, team_unavailability_file):
                 except StopIteration:
                     break
 
+                scheduled = False
                 for idx in range(len(remaining_matches)):
                     div, home, away = remaining_matches[idx]
 
                     if home in matches_today or away in matches_today:
-                        match_logs.append({"Step": "Skip Match", "Status": f"{home} or {away} already scheduled on {play_date}"})
                         continue
 
                     unavailable_home = unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))]
                     unavailable_away = unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))]
                     if not unavailable_home.empty or not unavailable_away.empty:
-                        match_logs.append({"Step": "Skip Match", "Status": f"{home} or {away} unavailable on {play_date}"})
                         continue
 
                     match_id = (div, home, away, play_date, slot['Time'], slot['Court'])
@@ -100,18 +102,27 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     matches_today.update([home, away])
                     scheduled_matches.add(match_id)
                     slots_used += 1
-                    match_logs.append({"Step": "Scheduled", "Status": f"✅ {home} vs {away} on {play_date} at {slot['Time']} on {slot['Court']}"})
                     del remaining_matches[idx]
+                    scheduled = True
                     break  # break inner loop to get a new slot
+
+                if not scheduled:
+                    continue
 
         fixtures_df = pd.DataFrame(output_rows)
         calendar_df = fixtures_df.copy()
         weekly_balance = fixtures_df.groupby(['Date', 'Division']).size().unstack(fill_value=0).reset_index()
 
-        log.append({"Step": "Fixture Generation", "Status": f"✅ Scheduled {len(fixtures_df)} matches with Rule 1 and Rule 2 enforced."})
+        log.append({"Step": "Fixture Generation", "Status": f"✅ Scheduled {len(fixtures_df)} matches with Rules 1–3 enforced."})
+
         if remaining_matches:
-            log.append({"Step": "Unscheduled Matches", "Status": f"⚠️ {len(remaining_matches)} matches could not be scheduled."})
-        log_df = pd.DataFrame(log + match_logs)
+            for div, home, away in remaining_matches:
+                log.append({
+                    "Step": "Unscheduled", 
+                    "Status": f"⚠️ Could not schedule match {home} vs {away} in {div}. Reasons could include team unavailability, no free slots, or team already playing that day."
+                })
+
+        log_df = pd.DataFrame(log)
 
         return fixtures_df, calendar_df, weekly_balance, log_df
 
