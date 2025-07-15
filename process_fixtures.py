@@ -58,7 +58,6 @@ def process_fixtures(league_config_file, team_unavailability_file):
         remaining_matches = fixture_list.copy()
         output_rows = []
         scheduled_matches = set()
-        match_logs = []
         unscheduled_matches = []
 
         for play_date in play_dates:
@@ -78,12 +77,16 @@ def process_fixtures(league_config_file, team_unavailability_file):
                 for idx in range(len(remaining_matches)):
                     div, home, away = remaining_matches[idx]
 
+                    # Rule 6: Skip if team is already playing today
                     if home in matches_today or away in matches_today:
+                        log.append({"Step": "Rule 6", "Status": f"⚠️ Skipped {home} vs {away} — one of the teams already has a match on {play_date}"})
                         continue
 
+                    # Rule 1 & 2: Team unavailability
                     unavailable_home = unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))]
                     unavailable_away = unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))]
                     if not unavailable_home.empty or not unavailable_away.empty:
+                        log.append({"Step": "Rule 1/2", "Status": f"⚠️ Skipped {home} vs {away} — team unavailable on {play_date}"})
                         continue
 
                     match_id = (div, home, away, play_date, slot['Time'], slot['Court'])
@@ -104,7 +107,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     slots_used += 1
                     del remaining_matches[idx]
                     scheduled = True
-                    break  # break inner loop to get a new slot
+                    break  # move to next slot
 
                 if not scheduled:
                     continue
@@ -113,17 +116,16 @@ def process_fixtures(league_config_file, team_unavailability_file):
         calendar_df = fixtures_df.copy()
         weekly_balance = fixtures_df.groupby(['Date', 'Division']).size().unstack(fill_value=0).reset_index()
 
-        log.append({"Step": "Fixture Generation", "Status": f"✅ Scheduled {len(fixtures_df)} matches with Rules 1–3 enforced."})
+        log.append({"Step": "Fixture Generation", "Status": f"✅ Scheduled {len(fixtures_df)} matches with Rules 1–3 and 6 enforced."})
 
         if remaining_matches:
             for div, home, away in remaining_matches:
                 log.append({
                     "Step": "Unscheduled", 
-                    "Status": f"⚠️ Could not schedule match {home} vs {away} in {div}. Reasons could include team unavailability, no free slots, or team already playing that day."
+                    "Status": f"⚠️ Could not schedule match {home} vs {away} in {div}. Reasons could include unavailability, existing match on date, or no free slots."
                 })
 
         log_df = pd.DataFrame(log)
-
         return fixtures_df, calendar_df, weekly_balance, log_df
 
     except Exception as e:
