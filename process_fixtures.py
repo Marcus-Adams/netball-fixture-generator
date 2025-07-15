@@ -62,9 +62,18 @@ def process_fixtures(league_config_file, team_unavailability_file):
             daily_slots = slots.copy()
             daily_slots['Date'] = play_date
             slots_used = 0
+            used_slots = set()
 
-            for _, slot in daily_slots.iterrows():
-                for idx, (div, home, away) in enumerate(remaining_matches):
+            slot_iter = daily_slots.iterrows()
+            while remaining_matches and slots_used < len(daily_slots):
+                try:
+                    slot_index, slot = next(slot_iter)
+                except StopIteration:
+                    break
+
+                for idx in range(len(remaining_matches)):
+                    div, home, away = remaining_matches[idx]
+
                     if home in matches_today or away in matches_today:
                         match_logs.append({"Step": "Skip Match", "Status": f"{home} or {away} already scheduled on {play_date}"})
                         continue
@@ -93,12 +102,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     slots_used += 1
                     match_logs.append({"Step": "Scheduled", "Status": f"✅ {home} vs {away} on {play_date} at {slot['Time']} on {slot['Court']}"})
                     del remaining_matches[idx]
-                    break  # move to next slot
-
-                if not remaining_matches:
-                    break
-            if not remaining_matches:
-                break
+                    break  # break inner loop to get a new slot
 
         fixtures_df = pd.DataFrame(output_rows)
         calendar_df = fixtures_df.copy()
