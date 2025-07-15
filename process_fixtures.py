@@ -44,6 +44,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
         fixture_list = []
         required_matches_per_div = {}
+        played_pairs = set()  # For Rule 7
 
         for div in divisions['Division']:
             div_teams = teams[teams['Division'] == div]['Team'].tolist()
@@ -77,6 +78,11 @@ def process_fixtures(league_config_file, team_unavailability_file):
                 for idx in range(len(remaining_matches)):
                     div, home, away = remaining_matches[idx]
 
+                    # Rule 5: A team may not play itself
+                    if home == away:
+                        log.append({"Step": "Rule 5", "Status": f"⚠️ Skipped {home} vs {away} — team cannot play itself"})
+                        continue
+
                     # Rule 6: Skip if team is already playing today
                     if home in matches_today or away in matches_today:
                         log.append({"Step": "Rule 6", "Status": f"⚠️ Skipped {home} vs {away} — one of the teams already has a match on {play_date}"})
@@ -89,8 +95,14 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         log.append({"Step": "Rule 1/2", "Status": f"⚠️ Skipped {home} vs {away} — team unavailable on {play_date}"})
                         continue
 
+                    # Rule 3: Already scheduled exact match on same date, time, court
                     match_id = (div, home, away, play_date, slot['Time'], slot['Court'])
                     if match_id in scheduled_matches:
+                        continue
+
+                    # Rule 7: Same fixture already occurred in any order across schedule
+                    if (div, home, away) in played_pairs or (div, away, home) in played_pairs:
+                        log.append({"Step": "Rule 7", "Status": f"⚠️ Skipped duplicate fixture {home} vs {away} in {div}"})
                         continue
 
                     output_rows.append({
@@ -104,6 +116,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
                     matches_today.update([home, away])
                     scheduled_matches.add(match_id)
+                    played_pairs.add((div, home, away))
                     slots_used += 1
                     del remaining_matches[idx]
                     scheduled = True
@@ -116,13 +129,21 @@ def process_fixtures(league_config_file, team_unavailability_file):
         calendar_df = fixtures_df.copy()
         weekly_balance = fixtures_df.groupby(['Date', 'Division']).size().unstack(fill_value=0).reset_index()
 
-        log.append({"Step": "Fixture Generation", "Status": f"✅ Scheduled {len(fixtures_df)} matches with Rules 1–3 and 6 enforced."})
+        # Rule 4: Check full round-robin completion
+        for div, expected in required_matches_per_div.items():
+            actual = len(fixtures_df[fixtures_df['Division'] == div])
+            if actual < expected:
+                log.append({"Step": "Rule 4", "Status": f"⚠️ Division {div} incomplete — scheduled {actual} of {expected} matches."})
+            else:
+                log.append({"Step": "Rule 4", "Status": f"✅ Division {div} fully scheduled ({actual} matches)."})
+
+        log.append({"Step": "Fixture Generation", "Status": f"✅ Scheduled {len(fixtures_df)} matches with Rules 1–7 enforced."})
 
         if remaining_matches:
             for div, home, away in remaining_matches:
                 log.append({
                     "Step": "Unscheduled", 
-                    "Status": f"⚠️ Could not schedule match {home} vs {away} in {div}. Reasons could include unavailability, existing match on date, or no free slots."
+                    "Status": f"⚠️ Could not schedule match {home} vs {away} in {div}. Reasons could include unavailability, existing match on date, duplicate fixture, or no free slots."
                 })
 
         log_df = pd.DataFrame(log)
