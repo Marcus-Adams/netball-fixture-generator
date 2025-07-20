@@ -1,8 +1,9 @@
 import pandas as pd
 import datetime
 import traceback
-from collections import defaultdict
+from collections import defaultdict, Counter
 import random
+
 
 def process_fixtures(league_config_file, team_unavailability_file):
     log = []
@@ -49,6 +50,14 @@ def process_fixtures(league_config_file, team_unavailability_file):
             fixtures_to_schedule.extend([(div, home, away) for home, away in matches])
             required_matches[div] = len(matches)
 
+        # --- STEP 2: Sort Matches by Availability Density ---
+        availability_counter = Counter()
+        for team in teams_df['Team']:
+            team_dates = [d for d in play_dates if unavail_df[(unavail_df['Team'] == team) & (unavail_df['Date'] == pd.to_datetime(d))].empty]
+            availability_counter[team] = len(team_dates)
+
+        fixtures_to_schedule.sort(key=lambda x: availability_counter[x[1]] + availability_counter[x[2]])
+
         log.append({"Step": "Rule 4", "Status": f"✅ Matches to schedule by division: {required_matches}"})
 
         scheduled = []
@@ -64,17 +73,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     for idx, (div, home, away) in enumerate(fixtures_to_schedule):
                         match_id = (div, home, away, play_date, time, court)
 
-                        # Rule 5: One match per team per week
                         if home in matches_today or away in matches_today:
                             continue
-
-                        # Rule 8: Team Unavailability
-                        home_un = unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))]
-                        away_un = unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))]
-                        if not home_un.empty or not away_un.empty:
+                        if not unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))].empty:
                             continue
-
-                        # Prevent duplicate match and court/time collision
+                        if not unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))].empty:
+                            continue
                         if match_id in scheduled_match_ids:
                             continue
                         if (div, home, away) in scheduled_pairings or (div, away, home) in scheduled_pairings:
@@ -96,6 +100,35 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         break
                     if not slot_used:
                         log.append({"Step": "Rule 6/7", "Status": f"⚠️ Slot unused on {play_date} {time} {court}"})
+
+        # --- STEP 1: Try to Reschedule Unscheduled Matches ---
+        retry_matches = fixtures_to_schedule[:]
+        for match in retry_matches:
+            div, home, away = match
+            scheduled_copy = scheduled[:]
+            for i, sched in enumerate(scheduled_copy):
+                if sched['Division'] == div:
+                    old_home, old_away = sched['Home Team'], sched['Away Team']
+                    play_date, time, court = sched['Date'], sched['Time Slot'], sched['Court']
+
+                    if home in [old_home, old_away] or away in [old_home, old_away]:
+                        continue
+                    if not unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))].empty:
+                        continue
+                    if not unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))].empty:
+                        continue
+
+                    scheduled[i] = {
+                        "Date": play_date,
+                        "Time Slot": time,
+                        "Court": court,
+                        "Division": div,
+                        "Home Team": home,
+                        "Away Team": away
+                    }
+                    scheduled_pairings.add((div, home, away))
+                    fixtures_to_schedule.remove(match)
+                    break
 
         # --- Final Checks for Rule 4 ---
         df_sched = pd.DataFrame(scheduled)
