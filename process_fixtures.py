@@ -65,6 +65,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
         team_week_map = defaultdict(list)
         team_time_slots = defaultdict(list)
         division_day_counts = defaultdict(lambda: defaultdict(int))
+        team_match_dates = defaultdict(list)
 
         for play_date in play_dates:
             matches_today = set()
@@ -74,7 +75,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     slot_used = False
                     candidate_matches = sorted(
                         fixtures_to_schedule,
-                        key=lambda x: (div_today[x[0]], team_availability(x[1]) + team_availability(x[2]))
+                        key=lambda x: (
+                            div_today[x[0]],
+                            team_availability(x[1]) + team_availability(x[2]),
+                            len([d for d in team_match_dates[x[1]] if abs((play_date - d).days) <= 7]) +
+                            len([d for d in team_match_dates[x[2]] if abs((play_date - d).days) <= 7])
+                        )
                     )
                     for idx, (div, home, away) in enumerate(candidate_matches):
                         match_id = (div, home, away, play_date, time, court)
@@ -112,6 +118,8 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         team_week_map[away].append(play_date)
                         team_time_slots[home].append(time)
                         team_time_slots[away].append(time)
+                        team_match_dates[home].append(play_date)
+                        team_match_dates[away].append(play_date)
                         division_day_counts[play_date][div] += 1
                         fixtures_to_schedule.remove((div, home, away))
                         slot_used = True
