@@ -1,70 +1,61 @@
 import streamlit as st
 import pandas as pd
-import datetime
-import traceback
-import random
-from collections import defaultdict
+from io import BytesIO
 from process_fixtures import process_fixtures
 
-
 st.set_page_config(page_title="Netball Fixtures Generator", layout="wide")
-st.title("Netball Fixtures Generator")
-st.markdown("""
-Upload your configuration and team unavailability files below to generate a fixtures schedule.
+st.title("🏐 Netball Fixtures Generator")
 
-**Instructions:**
-- Ensure files follow the correct Excel format with all required tabs.
-- Main Variables should include StartDate, EndDate, PlayDays, HolidayBlackouts, MatchesPerTeam.
-- All dates should be valid and consistent.
-""")
+st.markdown("Upload your **League_Configuration.xlsx** and **Team_Unavailability.xlsx** files to begin.")
 
-# --- Upload Section ---
-with st.expander("Upload Required Files", expanded=True):
-    league_config = st.file_uploader("Upload League_Configuration.xlsx", type="xlsx", key="league")
-    team_unavailability = st.file_uploader("Upload Team_Unavailability.xlsx", type="xlsx", key="unavail")
+col1, col2 = st.columns(2)
 
-# --- Rule/Goal Display ---
-with st.expander("View Rules and Goals Used in Scheduling"):
-    rules_df = pd.read_excel("Fixture_Scheduling_Rules.xlsx", sheet_name=0)
-    rules_df_sorted = rules_df.sort_values("ID")
-    for _, row in rules_df_sorted.iterrows():
-        st.write('RULES COLUMNS FOUND:', rules_df.columns.tolist())
-        st.markdown(f"{row['Definition']}")
-        st.markdown("---")
+with col1:
+    league_config_file = st.file_uploader("League Configuration File", type="xlsx", key="league")
+with col2:
+    team_unavailability_file = st.file_uploader("Team Unavailability File", type="xlsx", key="unavail")
 
-# Placeholder for processing output
-status_placeholder = st.empty()
-
-# --- Display summary stats placeholder ---
-stats_placeholder = st.empty()
-
-# Continue as normal...
-
-# --- Generate Button ---
-if league_config and team_unavailability:
+if league_config_file and team_unavailability_file:
     if st.button("Generate Fixture Schedule"):
-        fsched, tcal, wbal, log = process_fixtures(league_config, team_unavailability)
+        with st.spinner("Generating fixtures, applying rules and goals..."):
+            try:
+                fixtures, calendar, weekly_balance, logs = process_fixtures(league_config_file, team_unavailability_file)
 
-        if fsched is not None:
-            # Summary Stats
-            total_matches = len(fsched)
-            total_days = fsched['Date'].nunique()
-            total_teams = fsched['Home Team'].nunique() + fsched['Away Team'].nunique()
-            stats_placeholder.success(f"✅ {total_matches} matches scheduled across {total_days} play days.")
+                if fixtures is not None and not fixtures.empty:
+                    st.success("✅ Fixture generation successful.")
 
-            output_path = "Netball_Fixture_Output.xlsx"
-            with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
-                fsched.to_excel(writer, sheet_name="Fixture Schedule", index=False)
-                tcal.to_excel(writer, sheet_name="Team Calendars", index=False)
-                wbal.to_excel(writer, sheet_name="Weekly Division Balance", index=False)
-                log.to_excel(writer, sheet_name="Processing Log", index=False)
+                    # Show fixture schedule
+                    st.subheader("🗕️ Fixture Schedule")
+                    st.dataframe(fixtures)
 
-            with open(output_path, "rb") as f:
-                st.success("Fixtures successfully generated.")
-                st.download_button("Download Fixture Schedule", f, file_name=output_path)
-        else:
-            st.error("Unable to generate fixtures. Check Processing Log below.")
-            st.dataframe(log)
+                    # Show team calendar
+                    st.subheader("📖 Team Calendar")
+                    st.dataframe(calendar)
 
-elif league_config or team_unavailability:
-    st.warning("Please upload both configuration and unavailability files to proceed.")
+                    # Weekly division balance
+                    st.subheader("📊 Weekly Division Balance")
+                    st.dataframe(weekly_balance)
+
+                    # Logs
+                    st.subheader("🛠️ Processing Log")
+                    st.dataframe(logs)
+
+                    # Downloadable Excel
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        fixtures.to_excel(writer, sheet_name="Fixture Schedule", index=False)
+                        calendar.to_excel(writer, sheet_name="Team Calendar", index=False)
+                        weekly_balance.to_excel(writer, sheet_name="Weekly Division Balance", index=False)
+                        logs.to_excel(writer, sheet_name="Processing Log", index=False)
+                    st.download_button("📅 Download Schedule Workbook", data=output.getvalue(), file_name="Generated_Fixtures.xlsx")
+
+                else:
+                    st.error("⚠️ Unable to generate fixtures. Check Processing Log below.")
+                    if logs is not None:
+                        st.subheader("🛠️ Processing Log")
+                        st.dataframe(logs)
+
+            except Exception as e:
+                st.error(f"Unexpected error occurred: {e}")
+else:
+    st.info("Please upload both input files to enable fixture generation.")
