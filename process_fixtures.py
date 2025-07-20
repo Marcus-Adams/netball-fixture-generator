@@ -85,13 +85,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         if (div, home, away) in scheduled_pairings or (div, away, home) in scheduled_pairings:
                             continue
 
-                        # Goal 1: Default 2 per division, allow 3 only if no alternatives
+                        # Goal 1: Default 2 per division, allow 3 only if no other division is underrepresented
                         if div_today[div] >= 3:
                             continue
                         elif div_today[div] >= 2:
-                            future_match_pool = fixtures_to_schedule[idx+1:]
-                            other_divs = [d for d, _, _ in future_match_pool if d != div]
-                            if not other_divs:
+                            other_divs_with_less = any(count < 2 for d, count in div_today.items() if d != div)
+                            if other_divs_with_less:
                                 continue
 
                         scheduled.append({
@@ -129,7 +128,11 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
         # --- G1: Division Match Distribution Logging ---
         for date, divs in division_day_counts.items():
-            log.append({"Step": "Goal 1", "Status": f"✅ {date}: {dict(divs)} matches scheduled by division"})
+            balanced = all(2 <= v <= 3 for v in divs.values())
+            if balanced:
+                log.append({"Step": "Goal 1", "Status": f"✅ {date}: {dict(divs)} matches balanced by division"})
+            else:
+                log.append({"Step": "Goal 1", "Status": f"⚠️ {date}: {dict(divs)} matches imbalanced by division"})
 
         # --- Final Checks ---
         for div in required_matches:
