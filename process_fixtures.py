@@ -100,7 +100,10 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
         # --- Retry Logic with Guarded Two-Hop ---
         retry_successful = 0
+        retry_unsuccessful = 0
+        retry_diagnostics = []
         original_fixtures = fixtures_to_schedule.copy()
+
         for div, home, away in original_fixtures:
             placed = False
             for sidx, sched in enumerate(scheduled):
@@ -151,7 +154,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
                             fixtures_to_schedule.remove((div, home, away))
                             retry_successful += 1
                             placed = True
-                            log.append({"Step": "Retry Logic", "Status": f"✅ Swapped in {home} vs {away} on {match_date} replacing {displaced_home} vs {displaced_away}; {displaced_home} vs {displaced_away} moved to {date2} {time2} {court2}"})
+                            retry_diagnostics.append(f"{home} vs {away} on {match_date} replaced {displaced_home} vs {displaced_away}; displaced match moved to {date2} {time2} {court2}")
                             break
                         if placed:
                             break
@@ -160,7 +163,11 @@ def process_fixtures(league_config_file, team_unavailability_file):
                 if placed:
                     break
             if not placed:
+                retry_unsuccessful += 1
                 log.append({"Step": "Retry Logic", "Status": f"❌ Unable to reschedule {home} vs {away} in {div} via 2-hop logic."})
+
+        for line in retry_diagnostics:
+            log.append({"Step": "Retry Logic", "Status": f"✅ {line}"})
 
         # --- Final Checks ---
         df_sched = pd.DataFrame(scheduled)
