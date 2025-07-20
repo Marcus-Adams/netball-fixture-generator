@@ -19,6 +19,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
         start_date = pd.to_datetime(main_vars['StartDate']).date()
         end_date = pd.to_datetime(main_vars['EndDate']).date()
         play_days = eval(main_vars['PlayDays']) if isinstance(main_vars['PlayDays'], str) else main_vars['PlayDays']
+        court_capacity = int(main_vars['Courts'])
 
         # --- Safe parsing of HolidayBlackouts ---
         blackouts = []
@@ -66,6 +67,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
             daily_slots = slots.copy()
             daily_slots['Date'] = play_date
 
+            # --- Rule 6: Enforce court count matches Timeslot data ---
+            slot_court_count = daily_slots['Court'].nunique()
+            if slot_court_count != court_capacity:
+                log.append({"Step": "Rule 6", "Status": f"⚠️ Mismatch in court capacity. Expected {court_capacity}, found {slot_court_count} in Time Slots for {play_date}."})
+                continue  # Skip this date as invalid slot config
+
             for _, slot in daily_slots.iterrows():
                 slot_used = False
                 for idx, (div, home, away) in enumerate(remaining_matches):
@@ -78,18 +85,22 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     if home in matches_today or away in matches_today:
                         continue
 
-                    # Rule 1 & 2: Team unavailability
+                    # Rule 1 & 2: Fixture window and PlayDay already enforced by play_date loop
+
+                    # Rule 3: Holiday blackouts already enforced in play_dates generation
+
+                    # Rule 8: Team Unavailability
                     unavailable_home = unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))]
                     unavailable_away = unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))]
                     if not unavailable_home.empty or not unavailable_away.empty:
                         continue
 
-                    # Rule 3: Already scheduled exact match on same date, time, court
+                    # Rule 3 (again): Prevent duplicate match on same court/time/date
                     match_id = (div, home, away, play_date, slot['Time'], slot['Court'])
                     if match_id in scheduled_matches:
                         continue
 
-                    # Rule 7: Same fixture already occurred in any order across schedule
+                    # Rule 7: Prevent duplicate match regardless of court/time/date
                     if (div, home, away) in played_pairs or (div, away, home) in played_pairs:
                         continue
 
@@ -108,7 +119,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     played_pairs.add((div, home, away))
                     del remaining_matches[idx]
                     slot_used = True
-                    break  # Stop looking for match for this slot
+                    break
 
                 if not slot_used:
                     log.append({"Step": "Rule 8", "Status": f"⚠️ No match found for slot {slot['Time']} Court {slot['Court']} on {play_date}"})
@@ -117,7 +128,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
         calendar_df = fixtures_df.copy()
         weekly_balance = fixtures_df.groupby(['Date', 'Division']).size().unstack(fill_value=0).reset_index()
 
-        # Rule 4: Check full round-robin completion
+        # Rule 4: Division validation
         for div, expected in required_matches_per_div.items():
             actual = len(fixtures_df[fixtures_df['Division'] == div])
             if actual < expected:
