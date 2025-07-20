@@ -140,7 +140,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
         # --- G1: Division Match Distribution Logging ---
         for date, divs in division_day_counts.items():
-            balanced = all(2 <= v <= 3 for v in divs.values())
+            balanced = all(2 <= v <= 3 for v in divs.values()) and len(divs) == 4
             if balanced:
                 log.append({"Step": "Goal 1", "Status": f"✅ {date}: {dict(divs)} matches balanced by division"})
             else:
