@@ -1,7 +1,7 @@
 import pandas as pd
 import datetime
 import traceback
-from collections import defaultdict
+from collections import defaultdict, Counter
 import random
 
 
@@ -63,9 +63,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
         scheduled_match_ids = set()
         scheduled_pairings = set()
         team_week_map = defaultdict(list)
+        team_time_slots = defaultdict(list)
+        division_day_counts = defaultdict(lambda: defaultdict(int))
 
         for play_date in play_dates:
             matches_today = set()
+            div_today = defaultdict(int)
             for court in court_names:
                 for time in slot_times:
                     slot_used = False
@@ -82,6 +85,15 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         if (div, home, away) in scheduled_pairings or (div, away, home) in scheduled_pairings:
                             continue
 
+                        # Goal 1: Default 2 per division, allow 3 only if no alternatives
+                        if div_today[div] >= 3:
+                            continue
+                        elif div_today[div] >= 2:
+                            future_match_pool = fixtures_to_schedule[idx+1:]
+                            other_divs = [d for d, _, _ in future_match_pool if d != div]
+                            if not other_divs:
+                                continue
+
                         scheduled.append({
                             "Date": play_date,
                             "Time Slot": time,
@@ -95,78 +107,31 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         matches_today.update([home, away])
                         team_week_map[home].append(play_date)
                         team_week_map[away].append(play_date)
+                        team_time_slots[home].append(time)
+                        team_time_slots[away].append(time)
+                        division_day_counts[play_date][div] += 1
                         del fixtures_to_schedule[idx]
                         slot_used = True
                         break
                     if not slot_used:
                         log.append({"Step": "Rule 6/7", "Status": f"⚠️ Slot unused on {play_date} {time} {court}"})
 
-        # --- Retry Logic ---
-        retry_diagnostics = []
-        original_fixtures = fixtures_to_schedule.copy()
-        for div, home, away in original_fixtures:
-            placed = False
-            for sidx, sched in enumerate(scheduled):
-                match_date = sched['Date']
-                match_time = sched['Time Slot']
-                match_court = sched['Court']
-                displaced_home = sched['Home Team']
-                displaced_away = sched['Away Team']
-                displaced_div = sched['Division']
-
-                if any(t in [sched['Home Team'], sched['Away Team']] for t in [home, away]):
-                    continue
-                if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(match_date))].empty for t in [home, away]):
-                    continue
-
-                for date2 in play_dates:
-                    for court2 in court_names:
-                        for time2 in slot_times:
-                            if any((m['Date'] == date2 and m['Time Slot'] == time2 and m['Court'] == court2) for m in scheduled):
-                                continue
-                            if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(date2))].empty for t in [displaced_home, displaced_away]):
-                                continue
-
-                            second_match_id = (displaced_div, displaced_home, displaced_away, date2, time2, court2)
-                            if second_match_id in scheduled_match_ids:
-                                continue
-                            if (displaced_div, displaced_home, displaced_away) in scheduled_pairings or (displaced_div, displaced_away, displaced_home) in scheduled_pairings:
-                                continue
-
-                            scheduled[sidx] = {
-                                "Date": match_date,
-                                "Time Slot": match_time,
-                                "Court": match_court,
-                                "Division": div,
-                                "Home Team": home,
-                                "Away Team": away
-                            }
-                            scheduled.append({
-                                "Date": date2,
-                                "Time Slot": time2,
-                                "Court": court2,
-                                "Division": displaced_div,
-                                "Home Team": displaced_home,
-                                "Away Team": displaced_away
-                            })
-                            fixtures_to_schedule.remove((div, home, away))
-                            retry_diagnostics.append(f"Swapped in {home} vs {away} on {match_date} replacing {displaced_home} vs {displaced_away}; {displaced_home} vs {displaced_away} moved to {date2} {time2} {court2}")
-                            placed = True
-                            break
-                        if placed:
-                            break
-                    if placed:
-                        break
-                if placed:
-                    break
-            if not placed:
-                log.append({"Step": "Retry Logic", "Status": f"❌ Unable to reschedule {home} vs {away} in {div} via 2-hop logic."})
-
-        for line in retry_diagnostics:
-            log.append({"Step": "Retry Logic", "Status": f"✅ {line}"})
-
-        # --- Final Checks and G1-G4 Optimisation Placeholder ---
         df_sched = pd.DataFrame(scheduled)
+
+        # --- G4: Time Slot Fairness Logging ---
+        slot_fairness_log = []
+        for team, times in team_time_slots.items():
+            count = Counter(times)
+            if max(count.values()) > (len(play_dates) // len(slot_times)) + 2:
+                slot_fairness_log.append({"Step": "Goal 4", "Status": f"⚠️ {team} appears in same slot too often: {dict(count)}"})
+
+        log.extend(slot_fairness_log)
+
+        # --- G1: Division Match Distribution Logging ---
+        for date, divs in division_day_counts.items():
+            log.append({"Step": "Goal 1", "Status": f"✅ {date}: {dict(divs)} matches scheduled by division"})
+
+        # --- Final Checks ---
         for div in required_matches:
             actual = len(df_sched[df_sched['Division'] == div])
             expected = required_matches[div]
