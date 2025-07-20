@@ -1,57 +1,121 @@
-import streamlit as st
 import pandas as pd
-from io import BytesIO
-from process_fixtures import process_fixtures
+import datetime
+import traceback
+from collections import defaultdict
+import random
 
-st.set_page_config(page_title="Netball Fixtures Generator", layout="wide")
-st.title("🏐 Netball Fixtures Generator")
+def process_fixtures(league_config_file, team_unavailability_file):
+    log = []
+    try:
+        # --- Load Excel Inputs ---
+        xl = pd.ExcelFile(league_config_file)
+        main_vars = xl.parse("Main Variables", index_col=0).squeeze()
+        divisions_df = xl.parse("Divisions")
+        teams_df = xl.parse("Teams")
+        slots_df = xl.parse("Time Slots")
+        unavail_df = pd.read_excel(team_unavailability_file)
 
-st.markdown("Upload your **League_Configuration.xlsx** and **Team_Unavailability.xlsx** files to begin.")
+        # --- Parse Config Fields (Rules 1–3) ---
+        start_date = pd.to_datetime(main_vars['StartDate']).date()
+        end_date = pd.to_datetime(main_vars['EndDate']).date()
+        play_days = eval(main_vars['PlayDays']) if isinstance(main_vars['PlayDays'], str) else main_vars['PlayDays']
 
-col1, col2 = st.columns(2)
+        blackouts = []
+        raw_blackouts = main_vars.get('HolidayBlackouts')
+        if pd.notna(raw_blackouts):
+            try:
+                parsed_dates = pd.to_datetime([d.strip() for d in str(raw_blackouts).split(',') if d.strip()])
+                blackouts = [d.date() for d in parsed_dates]
+            except Exception as e:
+                log.append({"Step": "Rule 3", "Status": f"⚠️ Failed to parse HolidayBlackouts: {e}"})
 
-with col1:
-    league_config_file = st.file_uploader("League Configuration File", type="xlsx", key="league")
-with col2:
-    team_unavailability_file = st.file_uploader("Team Unavailability File", type="xlsx", key="unavail")
+        log.append({"Step": "Rules 1-3", "Status": f"✅ Loaded StartDate {start_date}, EndDate {end_date}, PlayDays {play_days}, Blackouts {blackouts}"})
 
-if league_config_file and team_unavailability_file:
-    if st.button("Generate Fixture Schedule"):
-        with st.spinner("Generating fixtures, applying rules and goals..."):
-            fixtures, calendar, weekly_balance, logs = process_fixtures(league_config_file, team_unavailability_file)
+        # --- Rule 6: Courts & Rule 7: Time Slots ---
+        court_names = slots_df['Court'].unique().tolist()
+        slot_times = slots_df['Time'].unique().tolist()
+        log.append({"Step": "Rule 6 & 7", "Status": f"✅ Found Courts: {court_names}, Time Slots: {slot_times}"})
 
-        if fixtures is not None and not fixtures.empty:
-            st.success("✅ Fixture generation successful.")
+        # --- Generate Playable Dates (Rules 1–3) ---
+        play_dates = pd.date_range(start=start_date, end=end_date)
+        play_dates = [d.date() for d in play_dates if d.strftime('%A') in play_days and d.date() not in blackouts]
 
-            # Show fixture schedule
-            st.subheader("📅 Fixture Schedule")
-            st.dataframe(fixtures)
+        # --- Rule 4: Build Fixtures Per Division ---
+        fixtures_to_schedule = []
+        required_matches = {}
+        for div in divisions_df['Division']:
+            teams = teams_df[teams_df['Division'] == div]['Team'].tolist()
+            matches = [(home, away) for i, home in enumerate(teams) for j, away in enumerate(teams) if i < j]
+            fixtures_to_schedule.extend([(div, home, away) for home, away in matches])
+            required_matches[div] = len(matches)
 
-            # Show team calendar
-            st.subheader("📖 Team Calendar")
-            st.dataframe(calendar)
+        log.append({"Step": "Rule 4", "Status": f"✅ Matches to schedule by division: {required_matches}"})
 
-            # Weekly division balance
-            st.subheader("📊 Weekly Division Balance")
-            st.dataframe(weekly_balance)
+        scheduled = []
+        scheduled_match_ids = set()
+        scheduled_pairings = set()
+        unscheduled = []
 
-            # Logs
-            st.subheader("🛠️ Processing Log")
-            st.dataframe(logs)
+        for play_date in play_dates:
+            matches_today = set()
+            for court in court_names:
+                for time in slot_times:
+                    slot_used = False
+                    for idx, (div, home, away) in enumerate(fixtures_to_schedule):
+                        match_id = (div, home, away, play_date, time, court)
 
-            # Downloadable Excel
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                fixtures.to_excel(writer, sheet_name="Fixture Schedule", index=False)
-                calendar.to_excel(writer, sheet_name="Team Calendar", index=False)
-                weekly_balance.to_excel(writer, sheet_name="Weekly Division Balance", index=False)
-                logs.to_excel(writer, sheet_name="Processing Log", index=False)
-            st.download_button("📥 Download Schedule Workbook", data=output.getvalue(), file_name="Generated_Fixtures.xlsx")
+                        # Rule 5: One match per team per week
+                        if home in matches_today or away in matches_today:
+                            continue
 
-        else:
-            st.error("⚠️ Unable to generate fixtures. Check Processing Log below.")
-            if logs is not None:
-                st.subheader("🛠️ Processing Log")
-                st.dataframe(logs)
-else:
-    st.info("Please upload both input files to enable fixture generation.")
+                        # Rule 8: Team Unavailability
+                        home_un = unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))]
+                        away_un = unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))]
+                        if not home_un.empty or not away_un.empty:
+                            continue
+
+                        # Prevent duplicate match and court/time collision
+                        if match_id in scheduled_match_ids:
+                            continue
+                        if (div, home, away) in scheduled_pairings or (div, away, home) in scheduled_pairings:
+                            continue
+
+                        scheduled.append({
+                            "Date": play_date,
+                            "Time Slot": time,
+                            "Court": court,
+                            "Division": div,
+                            "Home Team": home,
+                            "Away Team": away
+                        })
+                        scheduled_match_ids.add(match_id)
+                        scheduled_pairings.add((div, home, away))
+                        matches_today.update([home, away])
+                        del fixtures_to_schedule[idx]
+                        slot_used = True
+                        break
+                    if not slot_used:
+                        log.append({"Step": "Rule 6/7", "Status": f"⚠️ Slot unused on {play_date} {time} {court}"})
+
+        # --- Final Checks for Rule 4 ---
+        df_sched = pd.DataFrame(scheduled)
+        for div in required_matches:
+            actual = len(df_sched[df_sched['Division'] == div])
+            expected = required_matches[div]
+            if actual < expected:
+                log.append({"Step": "Rule 4", "Status": f"⚠️ Division {div} incomplete — scheduled {actual} of {expected} matches."})
+            else:
+                log.append({"Step": "Rule 4", "Status": f"✅ Division {div} fully scheduled with {actual} matches."})
+
+        for div, home, away in fixtures_to_schedule:
+            log.append({"Step": "Rule 8", "Status": f"⚠️ Unscheduled match: {home} vs {away} in {div}"})
+
+        calendar_df = df_sched.copy()
+        weekly_balance_df = df_sched.groupby(['Date', 'Division']).size().unstack(fill_value=0).reset_index()
+        log.append({"Step": "Final", "Status": f"✅ {len(df_sched)} matches scheduled across {len(play_dates)} play dates."})
+
+        return df_sched, calendar_df, weekly_balance_df, pd.DataFrame(log)
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        return None, None, None, pd.DataFrame([{"Step": "Exception", "Status": str(e), "Traceback": tb}])
