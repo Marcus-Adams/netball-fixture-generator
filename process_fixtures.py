@@ -72,7 +72,11 @@ def process_fixtures(league_config_file, team_unavailability_file):
             for court in court_names:
                 for time in slot_times:
                     slot_used = False
-                    for idx, (div, home, away) in enumerate(fixtures_to_schedule):
+                    candidate_matches = sorted(
+                        fixtures_to_schedule,
+                        key=lambda x: (div_today[x[0]], team_availability(x[1]) + team_availability(x[2]))
+                    )
+                    for idx, (div, home, away) in enumerate(candidate_matches):
                         match_id = (div, home, away, play_date, time, court)
                         if home in matches_today or away in matches_today:
                             continue
@@ -109,7 +113,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         team_time_slots[home].append(time)
                         team_time_slots[away].append(time)
                         division_day_counts[play_date][div] += 1
-                        del fixtures_to_schedule[idx]
+                        fixtures_to_schedule.remove((div, home, away))
                         slot_used = True
                         break
                     if not slot_used:
