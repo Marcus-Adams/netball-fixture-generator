@@ -65,17 +65,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     for idx, (div, home, away) in enumerate(fixtures_to_schedule):
                         match_id = (div, home, away, play_date, time, court)
 
-                        # Rule 5: One match per team per week
                         if home in matches_today or away in matches_today:
                             continue
-
-                        # Rule 8: Team Unavailability
-                        home_un = unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))]
-                        away_un = unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))]
-                        if not home_un.empty or not away_un.empty:
+                        if not unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))].empty:
                             continue
-
-                        # Prevent duplicate match and court/time collision
+                        if not unavail_df[(unavail_df['Team'] == away) & (unavail_df['Date'] == pd.to_datetime(play_date))].empty:
+                            continue
                         if match_id in scheduled_match_ids:
                             continue
                         if (div, home, away) in scheduled_pairings or (div, away, home) in scheduled_pairings:
@@ -98,32 +93,37 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     if not slot_used:
                         log.append({"Step": "Rule 6/7", "Status": f"⚠️ Slot unused on {play_date} {time} {court}"})
 
-        # Retry Logic (Phase 1): Try swapping in unscheduled matches
-        for div, home, away in fixtures_to_schedule[:]:
-            for i, sched in enumerate(scheduled):
-                orig_div, orig_home, orig_away = sched["Division"], sched["Home Team"], sched["Away Team"]
-                match_date = sched["Date"]
+        # --- Retry Logic: Try placing remaining matches by swapping ---
+        retry_attempted = []
+        retry_successful = 0
+        for idx, (div, home, away) in enumerate(fixtures_to_schedule[:]):
+            for sidx, sched in enumerate(scheduled):
+                # Check if this scheduled match can be swapped
+                current_div = sched['Division']
+                current_home = sched['Home Team']
+                current_away = sched['Away Team']
+                current_date = sched['Date']
 
-                # Check if the unscheduled match can be swapped in
-                if div != orig_div:
-                    continue
-                
-                same_day_unavailable = not unavail_df[
-                    ((unavail_df['Team'] == home) | (unavail_df['Team'] == away)) & (unavail_df['Date'] == pd.to_datetime(match_date))
-                ].empty
-
-                if same_day_unavailable:
+                if div != current_div:
                     continue
 
-                if (home in [orig_home, orig_away]) or (away in [orig_home, orig_away]):
-                    continue  # conflict
+                if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(current_date))].empty for t in [home, away]):
+                    continue
+                if any(t in [sched['Home Team'], sched['Away Team']] for t in [home, away]):
+                    continue
 
-                # Execute swap
-                scheduled[i]["Home Team"] = home
-                scheduled[i]["Away Team"] = away
-                scheduled_pairings.add((div, home, away))
+                # Swap
+                scheduled[sidx] = {
+                    "Date": current_date,
+                    "Time Slot": sched['Time Slot'],
+                    "Court": sched['Court'],
+                    "Division": div,
+                    "Home Team": home,
+                    "Away Team": away
+                }
                 fixtures_to_schedule.remove((div, home, away))
-                log.append({"Step": "Retry Logic", "Status": f"✅ Swapped in {home} vs {away} on {match_date} replacing {orig_home} vs {orig_away}"})
+                retry_successful += 1
+                log.append({"Step": "Retry Logic", "Status": f"✅ Swapped in {home} vs {away} on {current_date} replacing {current_home} vs {current_away}"})
                 break
 
         # --- Final Checks for Rule 4 ---
