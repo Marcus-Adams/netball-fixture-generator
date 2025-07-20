@@ -91,10 +91,11 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     if not slot_used:
                         log.append({"Step": "Rule 6/7", "Status": f"⚠️ Slot unused on {play_date} {time} {court}"})
 
-        # --- Retry Logic: Try placing remaining matches by cascading swap ---
+        # --- Retry Logic with Guarded Two-Hop ---
         retry_successful = 0
         original_fixtures = fixtures_to_schedule.copy()
         for div, home, away in original_fixtures:
+            placed = False
             for sidx, sched in enumerate(scheduled):
                 if sched['Division'] != div:
                     continue
@@ -110,21 +111,22 @@ def process_fixtures(league_config_file, team_unavailability_file):
                 if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(match_date))].empty for t in [home, away]):
                     continue
 
-                # Try to re-place the displaced match
                 for date2 in play_dates:
                     for court2 in court_names:
                         for time2 in slot_times:
-                            clash = False
-                            for m in scheduled:
-                                if m['Date'] == date2 and m['Time Slot'] == time2 and m['Court'] == court2:
-                                    clash = True
-                                    break
-                            if clash:
+                            if any((m['Date'] == date2 and m['Time Slot'] == time2 and m['Court'] == court2) for m in scheduled):
                                 continue
                             if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(date2))].empty for t in [displaced_home, displaced_away]):
                                 continue
 
-                            # Apply 2-hop swap
+                            # Only now confirm and write swap
+                            # Ensure the second match is valid
+                            second_match_id = (div, displaced_home, displaced_away, date2, time2, court2)
+                            if second_match_id in scheduled_match_ids:
+                                continue
+                            if (div, displaced_home, displaced_away) in scheduled_pairings or (div, displaced_away, displaced_home) in scheduled_pairings:
+                                continue
+
                             scheduled[sidx] = {
                                 "Date": match_date,
                                 "Time Slot": match_time,
@@ -143,15 +145,17 @@ def process_fixtures(league_config_file, team_unavailability_file):
                             })
                             fixtures_to_schedule.remove((div, home, away))
                             retry_successful += 1
+                            placed = True
                             log.append({"Step": "Retry Logic", "Status": f"✅ Swapped in {home} vs {away} on {match_date} replacing {displaced_home} vs {displaced_away}; {displaced_home} vs {displaced_away} moved to {date2} {time2} {court2}"})
                             break
-                        else:
-                            continue
+                        if placed:
+                            break
+                    if placed:
                         break
-                    else:
-                        continue
+                if placed:
                     break
-                break
+            if not placed:
+                log.append({"Step": "Retry Logic", "Status": f"❌ Unable to reschedule {home} vs {away} in {div} via 2-hop logic."})
 
         # --- Final Checks ---
         df_sched = pd.DataFrame(scheduled)
