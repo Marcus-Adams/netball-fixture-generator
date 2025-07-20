@@ -55,7 +55,6 @@ def process_fixtures(league_config_file, team_unavailability_file):
         scheduled = []
         scheduled_match_ids = set()
         scheduled_pairings = set()
-        unscheduled = []
 
         for play_date in play_dates:
             matches_today = set()
@@ -64,7 +63,6 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     slot_used = False
                     for idx, (div, home, away) in enumerate(fixtures_to_schedule):
                         match_id = (div, home, away, play_date, time, court)
-
                         if home in matches_today or away in matches_today:
                             continue
                         if not unavail_df[(unavail_df['Team'] == home) & (unavail_df['Date'] == pd.to_datetime(play_date))].empty:
@@ -93,40 +91,69 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     if not slot_used:
                         log.append({"Step": "Rule 6/7", "Status": f"⚠️ Slot unused on {play_date} {time} {court}"})
 
-        # --- Retry Logic: Try placing remaining matches by swapping ---
-        retry_attempted = []
+        # --- Retry Logic: Try placing remaining matches by cascading swap ---
         retry_successful = 0
-        for idx, (div, home, away) in enumerate(fixtures_to_schedule[:]):
+        original_fixtures = fixtures_to_schedule.copy()
+        for div, home, away in original_fixtures:
             for sidx, sched in enumerate(scheduled):
-                # Check if this scheduled match can be swapped
-                current_div = sched['Division']
-                current_home = sched['Home Team']
-                current_away = sched['Away Team']
-                current_date = sched['Date']
-
-                if div != current_div:
+                if sched['Division'] != div:
                     continue
 
-                if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(current_date))].empty for t in [home, away]):
-                    continue
+                match_date = sched['Date']
+                match_time = sched['Time Slot']
+                match_court = sched['Court']
+                displaced_home = sched['Home Team']
+                displaced_away = sched['Away Team']
+
                 if any(t in [sched['Home Team'], sched['Away Team']] for t in [home, away]):
                     continue
+                if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(match_date))].empty for t in [home, away]):
+                    continue
 
-                # Swap
-                scheduled[sidx] = {
-                    "Date": current_date,
-                    "Time Slot": sched['Time Slot'],
-                    "Court": sched['Court'],
-                    "Division": div,
-                    "Home Team": home,
-                    "Away Team": away
-                }
-                fixtures_to_schedule.remove((div, home, away))
-                retry_successful += 1
-                log.append({"Step": "Retry Logic", "Status": f"✅ Swapped in {home} vs {away} on {current_date} replacing {current_home} vs {current_away}"})
+                # Try to re-place the displaced match
+                for date2 in play_dates:
+                    for court2 in court_names:
+                        for time2 in slot_times:
+                            clash = False
+                            for m in scheduled:
+                                if m['Date'] == date2 and m['Time Slot'] == time2 and m['Court'] == court2:
+                                    clash = True
+                                    break
+                            if clash:
+                                continue
+                            if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(date2))].empty for t in [displaced_home, displaced_away]):
+                                continue
+
+                            # Apply 2-hop swap
+                            scheduled[sidx] = {
+                                "Date": match_date,
+                                "Time Slot": match_time,
+                                "Court": match_court,
+                                "Division": div,
+                                "Home Team": home,
+                                "Away Team": away
+                            }
+                            scheduled.append({
+                                "Date": date2,
+                                "Time Slot": time2,
+                                "Court": court2,
+                                "Division": div,
+                                "Home Team": displaced_home,
+                                "Away Team": displaced_away
+                            })
+                            fixtures_to_schedule.remove((div, home, away))
+                            retry_successful += 1
+                            log.append({"Step": "Retry Logic", "Status": f"✅ Swapped in {home} vs {away} on {match_date} replacing {displaced_home} vs {displaced_away}; {displaced_home} vs {displaced_away} moved to {date2} {time2} {court2}"})
+                            break
+                        else:
+                            continue
+                        break
+                    else:
+                        continue
+                    break
                 break
 
-        # --- Final Checks for Rule 4 ---
+        # --- Final Checks ---
         df_sched = pd.DataFrame(scheduled)
         for div in required_matches:
             actual = len(df_sched[df_sched['Division'] == div])
