@@ -62,6 +62,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
         scheduled = []
         scheduled_match_ids = set()
         scheduled_pairings = set()
+        team_week_map = defaultdict(list)
 
         for play_date in play_dates:
             matches_today = set()
@@ -92,16 +93,17 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         scheduled_match_ids.add(match_id)
                         scheduled_pairings.add((div, home, away))
                         matches_today.update([home, away])
+                        team_week_map[home].append(play_date)
+                        team_week_map[away].append(play_date)
                         del fixtures_to_schedule[idx]
                         slot_used = True
                         break
                     if not slot_used:
                         log.append({"Step": "Rule 6/7", "Status": f"⚠️ Slot unused on {play_date} {time} {court}"})
 
-        # --- Retry Logic with Division Pool Expansion ---
+        # --- Retry Logic ---
         retry_diagnostics = []
         original_fixtures = fixtures_to_schedule.copy()
-
         for div, home, away in original_fixtures:
             placed = False
             for sidx, sched in enumerate(scheduled):
@@ -163,7 +165,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
         for line in retry_diagnostics:
             log.append({"Step": "Retry Logic", "Status": f"✅ {line}"})
 
-        # --- Final Checks ---
+        # --- Final Checks and G1-G4 Optimisation Placeholder ---
         df_sched = pd.DataFrame(scheduled)
         for div in required_matches:
             actual = len(df_sched[df_sched['Division'] == div])
