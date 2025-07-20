@@ -52,6 +52,13 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
         log.append({"Step": "Rule 4", "Status": f"✅ Matches to schedule by division: {required_matches}"})
 
+        # --- Prioritise Matches By Team Availability Density ---
+        def team_availability(team):
+            total_available = sum(~unavail_df[unavail_df['Team'] == team]['Date'].isin(play_dates))
+            return total_available
+
+        fixtures_to_schedule.sort(key=lambda match: team_availability(match[1]) + team_availability(match[2]))
+
         scheduled = []
         scheduled_match_ids = set()
         scheduled_pairings = set()
@@ -119,8 +126,6 @@ def process_fixtures(league_config_file, team_unavailability_file):
                             if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(date2))].empty for t in [displaced_home, displaced_away]):
                                 continue
 
-                            # Only now confirm and write swap
-                            # Ensure the second match is valid
                             second_match_id = (div, displaced_home, displaced_away, date2, time2, court2)
                             if second_match_id in scheduled_match_ids:
                                 continue
