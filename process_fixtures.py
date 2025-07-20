@@ -52,7 +52,6 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
         log.append({"Step": "Rule 4", "Status": f"✅ Matches to schedule by division: {required_matches}"})
 
-        # --- Prioritise Matches By Team Availability Density ---
         def team_availability(team):
             total_available = sum(~unavail_df[unavail_df['Team'] == team]['Date'].isin(play_dates))
             return total_available
@@ -62,21 +61,22 @@ def process_fixtures(league_config_file, team_unavailability_file):
         scheduled = []
         scheduled_match_ids = set()
         scheduled_pairings = set()
-        team_week_map = defaultdict(list)
         team_time_slots = defaultdict(list)
         division_day_counts = defaultdict(lambda: defaultdict(int))
         team_match_dates = defaultdict(list)
 
+        # Predefine per-day targets for Goal 1: 2 matches per division
+        daily_targets = {date: {div: 2 for div in required_matches} for date in play_dates}
+
         for play_date in play_dates:
             matches_today = set()
-            div_today = defaultdict(int)
+            div_counts = defaultdict(int)
             for court in court_names:
                 for time in slot_times:
                     slot_used = False
                     candidate_matches = sorted(
                         fixtures_to_schedule,
                         key=lambda x: (
-                            div_today[x[0]],
                             team_availability(x[1]) + team_availability(x[2]),
                             len([d for d in team_match_dates[x[1]] if abs((play_date - d).days) <= 7]) +
                             len([d for d in team_match_dates[x[2]] if abs((play_date - d).days) <= 7])
@@ -95,13 +95,8 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         if (div, home, away) in scheduled_pairings or (div, away, home) in scheduled_pairings:
                             continue
 
-                        # Goal 1: Default 2 per division, allow 3 only if no other division is underrepresented
-                        if div_today[div] >= 3:
+                        if div_counts[div] >= daily_targets[play_date][div]:
                             continue
-                        elif div_today[div] >= 2:
-                            other_divs_with_less = any(count < 2 for d, count in div_today.items() if d != div)
-                            if other_divs_with_less:
-                                continue
 
                         scheduled.append({
                             "Date": play_date,
@@ -114,13 +109,12 @@ def process_fixtures(league_config_file, team_unavailability_file):
                         scheduled_match_ids.add(match_id)
                         scheduled_pairings.add((div, home, away))
                         matches_today.update([home, away])
-                        team_week_map[home].append(play_date)
-                        team_week_map[away].append(play_date)
                         team_time_slots[home].append(time)
                         team_time_slots[away].append(time)
                         team_match_dates[home].append(play_date)
                         team_match_dates[away].append(play_date)
                         division_day_counts[play_date][div] += 1
+                        div_counts[div] += 1
                         fixtures_to_schedule.remove((div, home, away))
                         slot_used = True
                         break
@@ -140,7 +134,7 @@ def process_fixtures(league_config_file, team_unavailability_file):
 
         # --- G1: Division Match Distribution Logging ---
         for date, divs in division_day_counts.items():
-            balanced = all(2 <= v <= 3 for v in divs.values()) and len(divs) == 4
+            balanced = all(v == 2 for v in divs.values()) and len(divs) == 4
             if balanced:
                 log.append({"Step": "Goal 1", "Status": f"✅ {date}: {dict(divs)} matches balanced by division"})
             else:
