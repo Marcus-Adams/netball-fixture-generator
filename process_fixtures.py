@@ -98,23 +98,19 @@ def process_fixtures(league_config_file, team_unavailability_file):
                     if not slot_used:
                         log.append({"Step": "Rule 6/7", "Status": f"⚠️ Slot unused on {play_date} {time} {court}"})
 
-        # --- Retry Logic with Guarded Two-Hop ---
-        retry_successful = 0
-        retry_unsuccessful = 0
+        # --- Retry Logic with Division Pool Expansion ---
         retry_diagnostics = []
         original_fixtures = fixtures_to_schedule.copy()
 
         for div, home, away in original_fixtures:
             placed = False
             for sidx, sched in enumerate(scheduled):
-                if sched['Division'] != div:
-                    continue
-
                 match_date = sched['Date']
                 match_time = sched['Time Slot']
                 match_court = sched['Court']
                 displaced_home = sched['Home Team']
                 displaced_away = sched['Away Team']
+                displaced_div = sched['Division']
 
                 if any(t in [sched['Home Team'], sched['Away Team']] for t in [home, away]):
                     continue
@@ -129,10 +125,10 @@ def process_fixtures(league_config_file, team_unavailability_file):
                             if any(not unavail_df[(unavail_df['Team'] == t) & (unavail_df['Date'] == pd.to_datetime(date2))].empty for t in [displaced_home, displaced_away]):
                                 continue
 
-                            second_match_id = (div, displaced_home, displaced_away, date2, time2, court2)
+                            second_match_id = (displaced_div, displaced_home, displaced_away, date2, time2, court2)
                             if second_match_id in scheduled_match_ids:
                                 continue
-                            if (div, displaced_home, displaced_away) in scheduled_pairings or (div, displaced_away, displaced_home) in scheduled_pairings:
+                            if (displaced_div, displaced_home, displaced_away) in scheduled_pairings or (displaced_div, displaced_away, displaced_home) in scheduled_pairings:
                                 continue
 
                             scheduled[sidx] = {
@@ -147,14 +143,13 @@ def process_fixtures(league_config_file, team_unavailability_file):
                                 "Date": date2,
                                 "Time Slot": time2,
                                 "Court": court2,
-                                "Division": div,
+                                "Division": displaced_div,
                                 "Home Team": displaced_home,
                                 "Away Team": displaced_away
                             })
                             fixtures_to_schedule.remove((div, home, away))
-                            retry_successful += 1
+                            retry_diagnostics.append(f"Swapped in {home} vs {away} on {match_date} replacing {displaced_home} vs {displaced_away}; {displaced_home} vs {displaced_away} moved to {date2} {time2} {court2}")
                             placed = True
-                            retry_diagnostics.append(f"{home} vs {away} on {match_date} replaced {displaced_home} vs {displaced_away}; displaced match moved to {date2} {time2} {court2}")
                             break
                         if placed:
                             break
@@ -163,7 +158,6 @@ def process_fixtures(league_config_file, team_unavailability_file):
                 if placed:
                     break
             if not placed:
-                retry_unsuccessful += 1
                 log.append({"Step": "Retry Logic", "Status": f"❌ Unable to reschedule {home} vs {away} in {div} via 2-hop logic."})
 
         for line in retry_diagnostics:
